@@ -6,6 +6,7 @@ import SKUListTable from './components/SKUListTable';
 
 const Dashboard = () => {
   const [isConnected, setIsConnected] = useState(false);
+  const [socketId, setSocketId] = useState(null);
   const [activeJobId, setActiveJobId] = useState(null);
   const [data, setData] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, pages: 1 });
@@ -31,7 +32,8 @@ const Dashboard = () => {
 
     socketRef.current.on('connect', () => {
       setIsConnected(true);
-      console.log('✅ Socket connected');
+      setSocketId(socketRef.current.id);
+      console.log('✅ Socket connected:', socketRef.current.id);
       
       // RE-JOIN: If we have an active job, join its room immediately on reconnect
       const savedJobId = localStorage.getItem('activeJobId');
@@ -42,6 +44,7 @@ const Dashboard = () => {
 
     socketRef.current.on('disconnect', () => {
       setIsConnected(false);
+      setSocketId(null);
       console.log('❌ Socket disconnected');
     });
 
@@ -202,11 +205,20 @@ const Dashboard = () => {
             <ArrowLeft className="w-6 h-6 text-gray-400 cursor-pointer" />
             <div className="flex flex-col">
               <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Product SKUs</h1>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></div>
-                <span className={`text-[10px] font-bold uppercase tracking-widest ${isConnected ? 'text-emerald-600' : 'text-rose-600'}`}>
-                  {isConnected ? 'Real-time Connected' : 'Connection Lost'}
-                </span>
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                <div className="flex items-center gap-1.5">
+                  <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></div>
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${isConnected ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {isConnected ? `Connected` : 'Disconnected'}
+                  </span>
+                  {socketId && <span className="text-[9px] text-gray-400 font-mono">({socketId})</span>}
+                </div>
+                {activeJobId && (
+                  <span className="text-[9px] font-medium text-blue-500 flex items-center gap-1">
+                    <span className="w-1 h-1 bg-blue-400 rounded-full"></span>
+                    Job: {activeJobId}
+                  </span>
+                )}
               </div>
             </div>
           </div>
