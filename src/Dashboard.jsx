@@ -6,6 +6,7 @@ import SKUListTable from './components/SKUListTable';
 
 const Dashboard = () => {
   const [isConnected, setIsConnected] = useState(false);
+  const [activeJobId, setActiveJobId] = useState(null);
   const [data, setData] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, pages: 1 });
   const [loading, setLoading] = useState(false);
@@ -13,6 +14,7 @@ const Dashboard = () => {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState('--- No File ---');
+  const [stats, setStats] = useState({ total: 0, valid: 0, invalid: 0 });
   const fileInputRef = useRef(null);
   const socketRef = useRef(null);
 
@@ -30,6 +32,12 @@ const Dashboard = () => {
     socketRef.current.on('connect', () => {
       setIsConnected(true);
       console.log('✅ Socket connected');
+      
+      // RE-JOIN: If we have an active job, join its room immediately on reconnect
+      const savedJobId = localStorage.getItem('activeJobId');
+      if (savedJobId) {
+        socketRef.current.emit('joinJob', savedJobId);
+      }
     });
 
     socketRef.current.on('disconnect', () => {
@@ -37,30 +45,68 @@ const Dashboard = () => {
       console.log('❌ Socket disconnected');
     });
 
+    socketRef.current.on('uploadProgress', (payload) => {
+      console.log(`[WS] Received Progress: ${payload.progress}%`, payload);
+      setProgress(payload.progress);
+      
+      // Update stats if provided
+      if (payload.totalRows) {
+        setStats(prev => ({ ...prev, total: payload.totalRows }));
+      }
+      
+      if (payload.newRecords && payload.newRecords.length > 0) {
+        setData((prev) => [...payload.newRecords, ...prev]); 
+      }
+
+      // If job is done, clean up localStorage
+      if (payload.progress === 100) {
+        localStorage.removeItem('activeJobId');
+        setActiveJobId(null);
+        setTimeout(() => setUploading(false), 2000);
+      }
+    });
+
+    // RECOVERY: Check for existing job on mount
+    const recoverJob = async () => {
+      const savedJobId = localStorage.getItem('activeJobId');
+      if (savedJobId) {
+        try {
+          const res = await fetch(`${API_BASE}/jobs/${savedJobId}`);
+          if (res.ok) {
+            const job = await res.json();
+            if (job.status === 'PROCESSING') {
+              setActiveJobId(savedJobId);
+              setUploading(true);
+              setProgress(job.progress);
+              setFileName(job.fileName);
+              setStats({ total: job.totalRows, valid: job.result.valid, invalid: job.result.invalid });
+              // Join room manually
+              socketRef.current.emit('joinJob', savedJobId);
+            } else {
+              localStorage.removeItem('activeJobId');
+            }
+          } else {
+            localStorage.removeItem('activeJobId');
+          }
+        } catch (e) {
+          localStorage.removeItem('activeJobId');
+        }
+      }
+    };
+
+    recoverJob();
+    fetchData(pagination.page);
+
     // REAL WORLD PROTECTION: Check browser hardware status
     const handleNetworkChange = () => {
       if (!navigator.onLine) {
         setIsConnected(false);
         console.log('🌐 Hardware Offline: Forcing connection lost state');
-      } else {
-        // Socket.io will automatically reconnect, 'connect' listener will set to true
       }
     };
 
     window.addEventListener('online', handleNetworkChange);
     window.addEventListener('offline', handleNetworkChange);
-
-    socketRef.current.on('uploadProgress', (payload) => {
-      console.log(`[WS] Received Progress: ${payload.progress}%`, payload);
-      setProgress(payload.progress);
-      
-      // LIVE STREAM: Append new records to the UI immediately
-      if (payload.newRecords && payload.newRecords.length > 0) {
-        setData((prev) => [...payload.newRecords, ...prev]); 
-      }
-    });
-
-    fetchData(pagination.page);
 
     return () => {
       window.removeEventListener('online', handleNetworkChange);
@@ -112,19 +158,21 @@ const Dashboard = () => {
         body: formData,
       });
 
+      const json = await res.json();
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.message || 'Upload failed');
+        throw new Error(json.message || 'Upload failed');
       }
 
-      await fetchData(1); // Reset to page 1 to see new data
+      localStorage.setItem('activeJobId', json.jobId);
+      setActiveJobId(json.jobId);
+      setStats({ total: json.totalRows, valid: 0, invalid: 0 });
+      socketRef.current.emit('joinJob', json.jobId);
     } catch (err) {
       setError(err.message);
-    } finally {
       setUploading(false);
       setProgress(0);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const triggerFileUpload = () => {
@@ -255,15 +303,15 @@ const Dashboard = () => {
             <div className="grid grid-cols-3 text-center border-t border-gray-50 pt-6">
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Total</p>
-                <p className="text-[20px] font-black text-slate-800 tracking-tight">{pagination.total}</p>
+                <p className="text-[20px] font-black text-slate-800 tracking-tight">{uploading ? stats.total : pagination.total}</p>
               </div>
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Success</p>
-                <p className="text-[20px] font-black text-emerald-500 tracking-tight">{data.filter(d=>d.status==='VALID').length}</p>
+                <p className="text-[20px] font-black text-emerald-500 tracking-tight">{uploading ? data.filter(d=>d.status==='VALID').length : data.filter(d=>d.status==='VALID').length}</p>
               </div>
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Failed</p>
-                <p className="text-[20px] font-black text-rose-500 tracking-tight">{data.filter(d=>d.status==='INVALID').length}</p>
+                <p className="text-[20px] font-black text-rose-500 tracking-tight">{uploading ? data.filter(d=>d.status==='INVALID').length : data.filter(d=>d.status==='INVALID').length}</p>
               </div>
             </div>
           </div>
