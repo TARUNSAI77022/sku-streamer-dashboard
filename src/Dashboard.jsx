@@ -75,27 +75,31 @@ const Dashboard = () => {
     // RECOVERY: Check for existing job on mount
     const recoverJob = async () => {
       const savedJobId = localStorage.getItem('activeJobId');
+      console.log('🔍 Checking for saved job:', savedJobId);
+      
       if (savedJobId) {
+        setActiveJobId(savedJobId); // Set it immediately so UI shows it
         try {
           const res = await fetch(`${API_BASE}/jobs/${savedJobId}`);
           if (res.ok) {
             const job = await res.json();
             if (job.status === 'PROCESSING') {
-              setActiveJobId(savedJobId);
               setUploading(true);
               setProgress(job.progress);
               setFileName(job.fileName);
               setStats({ all: job.totalRows, new: job.result.valid, updated: 0, errors: job.result.invalid });
-              // Join room manually
               socketRef.current.emit('joinJob', savedJobId);
             } else {
+              console.log('✅ Job already completed or failed, clearing.');
               localStorage.removeItem('activeJobId');
+              setActiveJobId(null);
             }
           } else {
             localStorage.removeItem('activeJobId');
+            setActiveJobId(null);
           }
         } catch (e) {
-          localStorage.removeItem('activeJobId');
+          console.error('❌ Job recovery fetch failed:', e);
         }
       }
     };
