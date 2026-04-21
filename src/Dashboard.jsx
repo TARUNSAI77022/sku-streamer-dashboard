@@ -14,7 +14,7 @@ const Dashboard = () => {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState('--- No File ---');
-  const [stats, setStats] = useState({ total: 0, valid: 0, invalid: 0 });
+  const [stats, setStats] = useState({ all: 0, new: 0, updated: 0, errors: 0 });
   const fileInputRef = useRef(null);
   const socketRef = useRef(null);
 
@@ -49,10 +49,13 @@ const Dashboard = () => {
       console.log(`[WS] Received Progress: ${payload.progress}%`, payload);
       setProgress(payload.progress);
       
-      // Update stats if provided
-      if (payload.totalRows) {
-        setStats(prev => ({ ...prev, total: payload.totalRows }));
-      }
+      // Update stats from the live payload
+      setStats(prev => ({ 
+        ...prev, 
+        all: payload.totalRows,
+        new: payload.newRecords && payload.newRecords[0].status === 'VALID' ? prev.new + 1 : prev.new,
+        errors: payload.newRecords && payload.newRecords[0].status === 'INVALID' ? prev.errors + 1 : prev.errors
+      }));
       
       if (payload.newRecords && payload.newRecords.length > 0) {
         setData((prev) => [...payload.newRecords, ...prev]); 
@@ -79,7 +82,7 @@ const Dashboard = () => {
               setUploading(true);
               setProgress(job.progress);
               setFileName(job.fileName);
-              setStats({ total: job.totalRows, valid: job.result.valid, invalid: job.result.invalid });
+              setStats({ all: job.totalRows, new: job.result.valid, updated: 0, errors: job.result.invalid });
               // Join room manually
               socketRef.current.emit('joinJob', savedJobId);
             } else {
@@ -165,7 +168,7 @@ const Dashboard = () => {
 
       localStorage.setItem('activeJobId', json.jobId);
       setActiveJobId(json.jobId);
-      setStats({ total: json.totalRows, valid: 0, invalid: 0 });
+      setStats({ all: json.totalRows, new: 0, updated: 0, errors: 0 });
       socketRef.current.emit('joinJob', json.jobId);
     } catch (err) {
       setError(err.message);
@@ -187,12 +190,7 @@ const Dashboard = () => {
     }
   };
 
-  const stats = {
-    all: pagination.total,
-    new: data.filter(d => d.status === 'VALID').length, // This is current page only, ideally backend provides total valid/invalid
-    updated: 0,
-    errors: data.filter(d => d.status === 'INVALID').length
-  };
+  // The 'stats' state at the top handles all counts now
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-['Inter',_sans-serif]">
@@ -303,15 +301,15 @@ const Dashboard = () => {
             <div className="grid grid-cols-3 text-center border-t border-gray-50 pt-6">
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Total</p>
-                <p className="text-[20px] font-black text-slate-800 tracking-tight">{uploading ? stats.total : pagination.total}</p>
+                <p className="text-[20px] font-black text-slate-800 tracking-tight">{uploading ? stats.all : pagination.total}</p>
               </div>
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Success</p>
-                <p className="text-[20px] font-black text-emerald-500 tracking-tight">{uploading ? data.filter(d=>d.status==='VALID').length : data.filter(d=>d.status==='VALID').length}</p>
+                <p className="text-[20px] font-black text-emerald-500 tracking-tight">{data.filter(d=>d.status==='VALID').length}</p>
               </div>
               <div>
                 <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Failed</p>
-                <p className="text-[20px] font-black text-rose-500 tracking-tight">{uploading ? data.filter(d=>d.status==='INVALID').length : data.filter(d=>d.status==='INVALID').length}</p>
+                <p className="text-[20px] font-black text-rose-500 tracking-tight">{data.filter(d=>d.status==='INVALID').length}</p>
               </div>
             </div>
           </div>
