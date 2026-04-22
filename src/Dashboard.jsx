@@ -42,18 +42,17 @@ const Dashboard = () => {
         socketRef.current.emit('joinJob', savedJobId);
         
         try {
-          // Use VITE_API_URL for the catch-up fetch
           const response = await fetch(`${API_BASE_URL}/jobs/${savedJobId}`);
           if (response.ok) {
             const jobData = await response.json();
             console.log('🔄 Syncing from DB:', jobData);
             setProgress(jobData.progress);
-            setStats(prev => ({
-              ...prev,
+            setStats({
               all: jobData.totalRows,
               new: jobData.result?.valid || 0,
+              updated: 0,
               errors: jobData.result?.invalid || 0
-            }));
+            });
             setActiveJobId(savedJobId);
             setUploading(jobData.status === 'PROCESSING');
           }
@@ -77,7 +76,6 @@ const Dashboard = () => {
       console.log(`[WS] Received Progress: ${payload.progress}%`, payload);
       setProgress(payload.progress);
       
-      // Update stats from the live payload
       setStats(prev => ({ 
         ...prev, 
         all: payload.totalRows,
@@ -89,7 +87,6 @@ const Dashboard = () => {
         setData((prev) => [...payload.newRecords, ...prev]); 
       }
 
-      // If job is done, clean up localStorage
       if (payload.progress === 100) {
         localStorage.removeItem('activeJobId');
         setActiveJobId(null);
@@ -97,13 +94,11 @@ const Dashboard = () => {
       }
     });
 
-    // RECOVERY: Check for existing job on mount
+    // Recovery sequence
     const recoverJob = async () => {
       const savedJobId = localStorage.getItem('activeJobId');
-      console.log('🔍 Checking for saved job:', savedJobId);
-      
       if (savedJobId) {
-        setActiveJobId(savedJobId); // Set it immediately so UI shows it
+        setActiveJobId(savedJobId);
         try {
           const res = await fetch(`${API_BASE}/jobs/${savedJobId}`);
           if (res.ok) {
@@ -114,140 +109,101 @@ const Dashboard = () => {
               setFileName(job.fileName);
               setStats({ all: job.totalRows, new: job.result.valid, updated: 0, errors: job.result.invalid });
               socketRef.current.emit('joinJob', savedJobId);
-            } else {
-              console.log('✅ Job already completed or failed, clearing.');
-              localStorage.removeItem('activeJobId');
-              setActiveJobId(null);
             }
-          } else {
-            localStorage.removeItem('activeJobId');
-            setActiveJobId(null);
           }
-        } catch (e) {
-          console.error('❌ Job recovery fetch failed:', e);
-        }
+        } catch (e) { console.error(e); }
       }
     };
 
     recoverJob();
     fetchData(pagination.page);
 
-    // REAL WORLD PROTECTION: Check browser hardware status
-    const handleNetworkChange = () => {
-      if (!navigator.onLine) {
-        setIsConnected(false);
-        console.log('🌐 Hardware Offline: Forcing connection lost state');
-      }
-    };
-
-    window.addEventListener('online', handleNetworkChange);
-    window.addEventListener('offline', handleNetworkChange);
-
     return () => {
-      window.removeEventListener('online', handleNetworkChange);
-      window.removeEventListener('offline', handleNetworkChange);
       if (socketRef.current) socketRef.current.disconnect();
     };
   }, []);
 
-  const fetchData = async (page = 1) => {
+  const fetchData = async (page) => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE}/sku-uploads?page=${page}&limit=50`);
-      const json = await res.json();
-      setData(json.records);
-      setPagination(json.pagination);
-      setLoading(false);
-    } catch (err) {
-      setError('Failed to fetch data');
-      setLoading(false);
-    }
+      const res = await fetch(`${API_BASE}/sku-uploads?page=${page}&limit=${pagination.limit}`);
+      const result = await res.json();
+      setData(result.data);
+      setPagination({
+        page: result.pagination.page,
+        limit: result.pagination.limit,
+        total: result.pagination.total,
+        pages: result.pagination.pages
+      });
+      // If not uploading, set stats from pagination total
+      if (!uploading) {
+        setStats(prev => ({ ...prev, all: result.pagination.total }));
+      }
+    } catch (e) { setError('Failed to load data'); }
+    finally { setLoading(false); }
+  };
+
+  const handlePageChange = (newPage) => {
+    fetchData(newPage);
+  };
+
+  const triggerFileUpload = () => {
+    fileInputRef.current.click();
   };
 
   const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
+    const file = event.target.current?.files?.[0] || event.target.files[0];
     if (!file) return;
-
-    // Validation: .xlsx and Max 5MB
-    if (!file.name.endsWith('.xlsx')) {
-      alert('Please upload only .xlsx files.');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      alert('File size exceeds 5MB limit.');
-      return;
-    }
 
     setFileName(file.name);
     setUploading(true);
     setProgress(0);
-    setData([]); // Clear table for live streaming
+    setStats({ all: 0, new: 0, updated: 0, errors: 0 });
     setError(null);
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('socketId', socketRef.current.id);
 
     try {
-      const res = await fetch(`${API_BASE}/upload`, {
+      const response = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
         body: formData,
       });
 
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json.message || 'Upload failed');
+      const result = await response.json();
+      if (response.ok) {
+        localStorage.setItem('activeJobId', result.jobId);
+        setActiveJobId(result.jobId);
+        socketRef.current.emit('joinJob', result.jobId);
+      } else {
+        setError(result.error || 'Upload failed');
+        setUploading(false);
       }
-
-      localStorage.setItem('activeJobId', json.jobId);
-      setActiveJobId(json.jobId);
-      setStats({ all: json.totalRows, new: 0, updated: 0, errors: 0 });
-      socketRef.current.emit('joinJob', json.jobId);
     } catch (err) {
-      setError(err.message);
+      setError('Connection error');
       setUploading(false);
-      setProgress(0);
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const triggerFileUpload = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
     }
   };
-
-  const handlePageChange = (newPage) => {
-    if (newPage >= 1 && newPage <= pagination.pages) {
-      fetchData(newPage);
-    }
-  };
-
-  // The 'stats' state at the top handles all counts now
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-['Inter',_sans-serif]">
-      <div className="w-full max-w-[580px] bg-white rounded-[2.5rem] shadow-[0_20px_60px_rgba(0,0,0,0.08)] overflow-hidden border border-gray-100 flex flex-col">
-        
+    <div className="min-h-screen bg-[#F8FAFC] p-4 md:p-8">
+      <div className="max-w-6xl mx-auto bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden">
         {/* Header Section */}
-        <div className="flex items-center justify-between px-8 py-7">
+        <div className="px-8 pt-8 pb-6 border-b border-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-4">
-            <ArrowLeft className="w-6 h-6 text-gray-400 cursor-pointer" />
-            <div className="flex flex-col">
+            <div className="p-3 bg-slate-900 rounded-2xl shadow-lg shadow-slate-200">
+              <ArrowLeft className="w-6 h-6 text-white" />
+            </div>
+            <div>
               <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Product SKUs</h1>
               <div className="flex flex-col gap-0.5 mt-0.5">
                 <div className="flex items-center gap-1.5">
-                  <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></div>
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${isConnected ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {isConnected ? `Connected` : 'Disconnected'}
+                  <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400 animate-bounce'}`}></div>
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${isConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {isConnected ? `Server Connected` : 'Attempting Reconnection...'}
                   </span>
-                  {socketId && <span className="text-[9px] text-gray-400 font-mono">({socketId})</span>}
                 </div>
-                {activeJobId && (
-                  <span className="text-[9px] font-medium text-blue-500 flex items-center gap-1">
-                    <span className="w-1 h-1 bg-blue-400 rounded-full"></span>
-                    Job: {activeJobId}
-                  </span>
-                )}
               </div>
             </div>
           </div>
@@ -256,49 +212,29 @@ const Dashboard = () => {
               <Paperclip className="w-3.5 h-3.5 rotate-45" />
               <span className="truncate max-w-[130px]">{fileName}</span>
             </div>
-            {fileName !== '--- No File ---' && !uploading && (
-              <X 
-                className="w-5 h-5 text-gray-300 cursor-pointer hover:text-rose-500" 
-                onClick={() => { setFileName('--- No File ---'); setData([]); }}
-              />
-            )}
           </div>
         </div>
 
         <div className="px-8 pb-8">
-          <StatsCards stats={stats} />
+          <StatsCards stats={stats} uploading={uploading} />
 
           <div className="mt-2 min-h-[420px]">
             {loading && !uploading ? (
               <div className="flex flex-col items-center justify-center min-h-[350px]">
                 <Loader2 className="w-10 h-10 text-blue-500 animate-spin mb-2" />
-                <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest">Loading...</p>
+                <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest">Loading Data...</p>
               </div>
             ) : (
               <>
                 <SKUListTable items={data} />
-                
-                {/* Pagination Controls */}
                 {pagination.pages > 1 && (
                   <div className="flex items-center justify-between mt-4 px-2">
                     <p className="text-[11px] font-bold text-gray-400 tracking-tighter">
                       PAGE {pagination.page} OF {pagination.pages}
                     </p>
                     <div className="flex gap-2">
-                      <button 
-                        onClick={() => handlePageChange(pagination.page - 1)}
-                        disabled={pagination.page === 1}
-                        className="p-1.5 rounded-md border border-gray-100 hover:bg-slate-50 disabled:opacity-30 transition-all"
-                      >
-                        <ChevronLeft className="w-4 h-4 text-slate-600" />
-                      </button>
-                      <button 
-                        onClick={() => handlePageChange(pagination.page + 1)}
-                        disabled={pagination.page === pagination.pages}
-                        className="p-1.5 rounded-md border border-gray-100 hover:bg-slate-50 disabled:opacity-30 transition-all"
-                      >
-                        <ChevronRight className="w-4 h-4 text-slate-600" />
-                      </button>
+                      <button onClick={() => handlePageChange(pagination.page - 1)} disabled={pagination.page === 1} className="p-1.5 rounded-md border border-gray-100 hover:bg-slate-50 disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+                      <button onClick={() => handlePageChange(pagination.page + 1)} disabled={pagination.page === pagination.pages} className="p-1.5 rounded-md border border-gray-100 hover:bg-slate-50 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
                     </div>
                   </div>
                 )}
@@ -306,53 +242,46 @@ const Dashboard = () => {
             )}
           </div>
 
-          <div className="mt-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <h3 className="text-xl font-extrabold text-slate-800">Skus Upload</h3>
-                <span className="text-[14px] font-semibold text-gray-400 font-sans tracking-tight">
-                  {uploading ? `(${progress}% Complete)` : pagination.total > 0 ? '(Synced Settings)' : '(0% Complete)'}
-                </span>
+          <div className="mt-8 pt-8 border-t border-slate-50">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xl font-bold text-slate-800">Skus Upload</h3>
+                  <span className="text-[13px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-lg">
+                    {uploading ? `${progress}%` : 'Ready'}
+                  </span>
+                </div>
+                {uploading && <p className="text-[11px] text-slate-400 font-medium mt-1 italic">Uploading rows in background...</p>}
               </div>
+              
               <button 
                 onClick={triggerFileUpload}
                 disabled={uploading}
-                className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-black text-white rounded-xl text-[13px] font-bold transition-all disabled:opacity-50"
+                className="flex items-center gap-2 px-6 py-3 bg-slate-900 hover:bg-black text-white rounded-2xl text-[14px] font-bold transition-all disabled:opacity-50 shadow-lg shadow-slate-200"
               >
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                {uploading ? 'Processing...' : 'Upload File'}
+                {uploading ? 'Processing File...' : 'Upload Excel File'}
               </button>
               <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx" className="hidden" />
             </div>
 
+            {uploading && (
+              <div className="h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-50 p-0.5">
+                <div 
+                  className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600 rounded-full transition-all duration-700 ease-out relative overflow-hidden"
+                  style={{ width: `${progress}%` }}
+                >
+                  <div className="absolute inset-0 bg-white/20 animate-shimmer"></div>
+                </div>
+              </div>
+            )}
+
             {error && (
-              <div className="mb-4 p-3 bg-rose-50 border border-rose-100 rounded-xl text-rose-500 text-[12px] font-bold flex items-center gap-2">
+              <div className="mt-4 p-3 bg-rose-50 border border-rose-100 rounded-xl text-rose-500 text-[12px] font-bold flex items-center gap-2 animate-bounce">
                 <XCircle className="w-4 h-4" />
                 <span>{error}</span>
               </div>
             )}
-
-            <div className="relative h-2 w-full bg-gray-100 rounded-full mb-6 overflow-hidden">
-              <div 
-                className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-300"
-                style={{ width: uploading ? `${progress}%` : pagination.total > 0 ? '100%' : '0%' }}
-              />
-            </div>
-
-            <div className="grid grid-cols-3 text-center border-t border-gray-50 pt-6">
-              <div>
-                <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Total</p>
-                <p className="text-[20px] font-black text-slate-800 tracking-tight">{uploading ? stats.all : pagination.total}</p>
-              </div>
-              <div>
-                <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Success</p>
-                <p className="text-[20px] font-black text-emerald-500 tracking-tight">{data.filter(d=>d.status==='VALID').length}</p>
-              </div>
-              <div>
-                <p className="text-[12px] font-bold text-gray-400 tracking-wider mb-1 uppercase">Failed</p>
-                <p className="text-[20px] font-black text-rose-500 tracking-tight">{data.filter(d=>d.status==='INVALID').length}</p>
-              </div>
-            </div>
           </div>
         </div>
       </div>
