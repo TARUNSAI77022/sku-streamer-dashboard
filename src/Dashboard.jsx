@@ -24,22 +24,47 @@ const Dashboard = () => {
   useEffect(() => {
     // Socket initialization
     const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
-    socketRef.current = io(SOCKET_URL, {
-      reconnection: true,
-      reconnectionAttempts: 20,
-      reconnectionDelay: 2000,
+    socketRef.current = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 2000,      // Start trying every 2 seconds
+      reconnectionDelayMax: 10000,   // If failure continues, wait up to 10 seconds
+      randomizationFactor: 0.5       // Add some "jitter" so not everyone retries at the exact same millisecond
     });
 
-    socketRef.current.on('connect', () => {
+    socketRef.current.on('connect', async () => {
       setIsConnected(true);
       setSocketId(socketRef.current.id);
-      console.log('✅ Socket connected:', socketRef.current.id);
+      console.log('✅ Connected/Syncing:', socketRef.current.id);
       
-      // RE-JOIN: If we have an active job, join its room immediately on reconnect
       const savedJobId = localStorage.getItem('activeJobId');
       if (savedJobId) {
+        // 1. Tell backend we are back for this specific job
         socketRef.current.emit('joinJob', savedJobId);
+        
+        // 2. CATCH-UP: Get latest state from DB in case we missed events
+        try {
+          const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'}/api/jobs/${savedJobId}`);
+          if (response.ok) {
+            const jobData = await response.json();
+            console.log('🔄 Syncing from DB:', jobData);
+            setProgress(jobData.progress);
+            setStats(prev => ({
+              ...prev,
+              all: jobData.totalRows,
+              new: jobData.result?.valid || 0,
+              errors: jobData.result?.invalid || 0
+            }));
+            setActiveJobId(savedJobId);
+            setUploading(jobData.status === 'PROCESSING');
+          }
+        } catch (err) {
+          console.error('❌ Failed to sync job state:', err);
+        }
       }
+    });
+
+    socketRef.current.on('reconnect_attempt', () => {
+      console.log('📡 Attempting to reconnect...');
     });
 
     socketRef.current.on('disconnect', () => {
