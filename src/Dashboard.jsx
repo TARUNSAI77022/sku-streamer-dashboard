@@ -84,7 +84,11 @@ const Dashboard = () => {
       }));
       
       if (payload.newRecords && payload.newRecords.length > 0) {
-        setData((prev) => [...payload.newRecords, ...prev]); 
+        setData((prev) => {
+          // Safety Check: Ensure prev is an array before spreading
+          const currentData = Array.isArray(prev) ? prev : [];
+          return [...payload.newRecords, ...currentData];
+        }); 
       }
 
       if (payload.progress === 100) {
