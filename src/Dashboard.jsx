@@ -22,13 +22,14 @@ const Dashboard = () => {
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
   useEffect(() => {
-    // Socket initialization
     const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
-    socketRef.current = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000', {
+    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
+    socketRef.current = io(SOCKET_URL, {
       reconnectionAttempts: Infinity,
-      reconnectionDelay: 2000,      // Start trying every 2 seconds
-      reconnectionDelayMax: 10000,   // If failure continues, wait up to 10 seconds
-      randomizationFactor: 0.5       // Add some "jitter" so not everyone retries at the exact same millisecond
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
+      randomizationFactor: 0.5
     });
 
     socketRef.current.on('connect', async () => {
@@ -38,12 +39,11 @@ const Dashboard = () => {
       
       const savedJobId = localStorage.getItem('activeJobId');
       if (savedJobId) {
-        // 1. Tell backend we are back for this specific job
         socketRef.current.emit('joinJob', savedJobId);
         
-        // 2. CATCH-UP: Get latest state from DB in case we missed events
         try {
-          const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'}/api/jobs/${savedJobId}`);
+          // Use VITE_API_URL for the catch-up fetch
+          const response = await fetch(`${API_BASE_URL}/jobs/${savedJobId}`);
           if (response.ok) {
             const jobData = await response.json();
             console.log('🔄 Syncing from DB:', jobData);
